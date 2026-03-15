@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "株パト",
+    "slug": "stock-alert-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.stockalert.app",
+      "buildNumber": "1",
+      "infoPlist": {
+        "CFBundleDisplayName": "株パト",
+        "UIBackgroundModes": ["fetch"],
+        "BGTaskSchedulerPermittedIdentifiers": ["com.stockalert.app.refresh"]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.stockalert.app"
+    },
+    "plugins": [
+      "expo-notifications",
+      "expo-background-fetch"
+    }
+  }
+}
