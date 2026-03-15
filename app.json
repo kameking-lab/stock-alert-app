@@ -17,8 +17,15 @@
       "buildNumber": "1",
       "infoPlist": {
         "CFBundleDisplayName": "株パト",
-        "UIBackgroundModes": ["fetch"],
-        "BGTaskSchedulerPermittedIdentifiers": ["com.stockalert.app.refresh"]
+        "UIBackgroundModes": [
+          "fetch",
+          "fetch"
+        ],
+        "BGTaskSchedulerPermittedIdentifiers": [
+          "com.stockalert.app.refresh",
+          "com.stockalert.app.refresh"
+        ],
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -26,11 +33,20 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "com.stockalert.app"
+      "package": "com.stockalert.app",
+      "permissions": [
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.WAKE_LOCK"
+      ]
     },
     "plugins": [
       "expo-notifications",
       "expo-background-fetch"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "a8d23c22-7e01-443c-8564-64a15d3d1406"
+      }
     }
   }
 }
