@@ -42,7 +42,8 @@
     "plugins": [
       "expo-notifications",
       "expo-background-fetch",
-      "expo-asset"
+      "expo-asset",
+      "expo-font"
     ],
     "extra": {
       "eas": {
