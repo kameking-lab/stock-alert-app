@@ -13,7 +13,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.stockalert.app",
+      "bundleIdentifier": "com.kamekinglab.stockalert",
       "buildNumber": "1",
       "infoPlist": {
         "CFBundleDisplayName": "株パト",
@@ -33,7 +33,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "com.stockalert.app",
+      "package": "com.kamekinglab.stockalert",
       "permissions": [
         "android.permission.RECEIVE_BOOT_COMPLETED",
         "android.permission.WAKE_LOCK"
