@@ -6,22 +6,30 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   View,
   Text,
-  FlatList,
   StyleSheet,
   TouchableOpacity,
   RefreshControl,
   Alert,
 } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import DraggableFlatList from 'react-native-draggable-flatlist';
 import type { StockItem, StockRowItem } from '../types/stock';
-import { loadStocks, removeStock } from '../services/storage';
-import { fetchQuotes } from '../services/stockPriceService';
-import { getDisplayName, isAboveUpper, isBelowLower } from '../types/stock';
+import { loadStocks, removeStock, saveStocks } from '../services/storage';
+import { fetchQuotes, fetchSparklines } from '../services/stockPriceService';
+import { getDisplayName } from '../types/stock';
 import StockRow from '../components/StockRow';
 import AddStockModal from '../components/AddStockModal';
+import type { RootStackParamList } from '../../App';
+
+type HomeScreenNavigation = NativeStackNavigationProp<RootStackParamList, 'Home'>;
 
 export default function HomeScreen() {
+  const navigation = useNavigation<HomeScreenNavigation>();
   const [items, setItems] = useState<StockItem[]>([]);
   const [rows, setRows] = useState<StockRowItem[]>([]);
+  const [sparklines, setSparklines] = useState<Record<string, number[]>>({});
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
 
@@ -30,10 +38,15 @@ export default function HomeScreen() {
     setItems(list);
     if (list.length === 0) {
       setRows([]);
+      setSparklines({});
       return;
     }
     const tickers = list.map((s) => s.ticker);
-    const quotes = await fetchQuotes(tickers);
+    const [quotes, nextSparklines] = await Promise.all([
+      fetchQuotes(tickers),
+      fetchSparklines(tickers),
+    ]);
+    setSparklines(nextSparklines);
     setRows(
       list.map((item) => ({
         ...item,
@@ -82,8 +95,26 @@ export default function HomeScreen() {
     [load]
   );
 
+  const onDragEnd = useCallback(
+    async ({ data }: { data: StockRowItem[] }) => {
+      setRows(data);
+      const nextItems: StockItem[] = data.map((row) => ({
+        id: row.id,
+        ticker: row.ticker,
+        upperLimit: row.upperLimit,
+        lowerLimit: row.lowerLimit,
+        displayName: row.displayName,
+        createdAt: row.createdAt,
+      }));
+      setItems(nextItems);
+      await saveStocks(nextItems);
+    },
+    []
+  );
+
   return (
-    <View style={styles.container}>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>株価アラート</Text>
         <TouchableOpacity style={styles.addButton} onPress={onAdd}>
@@ -100,59 +131,75 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
       ) : (
-        <FlatList
+        <DraggableFlatList
           data={rows}
           keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <StockRow item={item} onDelete={() => onDelete(item)} />
+          renderItem={({ item, drag, isActive }) => (
+            <StockRow
+              item={item}
+              onDelete={() => onDelete(item)}
+              onPress={() => navigation.navigate('StockDetail', { ticker: item.ticker })}
+              drag={drag}
+              isActive={isActive}
+              prices={sparklines[item.ticker]}
+            />
           )}
+          onDragEnd={onDragEnd}
           refreshControl={
-            <RefreshControl refreshing={loading} onRefresh={onRefresh} />
+            <RefreshControl
+              refreshing={loading}
+              onRefresh={onRefresh}
+              tintColor="#FFFFFF"
+            />
           }
           contentContainerStyle={styles.listContent}
         />
       )}
 
       <AddStockModal visible={modalVisible} onClose={onModalClose} />
-    </View>
+      </View>
+    </GestureHandlerRootView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#000000',
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
     paddingTop: 56,
-    paddingBottom: 12,
-    backgroundColor: '#fff',
+    paddingBottom: 16,
+    backgroundColor: '#000000',
     borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    borderBottomColor: '#2C2C2E',
   },
   title: {
-    fontSize: 24,
+    color: '#FFFFFF',
+    fontSize: 30,
     fontWeight: '700',
   },
   addButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#2196F3',
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#0A84FF',
     alignItems: 'center',
     justifyContent: 'center',
   },
   addButtonText: {
-    fontSize: 24,
-    color: '#fff',
+    fontSize: 22,
+    color: '#FFFFFF',
     fontWeight: '600',
+    lineHeight: 24,
   },
   listContent: {
-    padding: 12,
+    paddingHorizontal: 16,
+    paddingTop: 4,
     paddingBottom: 32,
   },
   empty: {
@@ -165,21 +212,22 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '600',
     marginBottom: 8,
+    color: '#FFFFFF',
   },
   emptySub: {
     fontSize: 14,
-    color: '#666',
+    color: '#8E8E93',
     textAlign: 'center',
     marginBottom: 24,
   },
   emptyButton: {
     paddingHorizontal: 24,
     paddingVertical: 12,
-    backgroundColor: '#2196F3',
-    borderRadius: 8,
+    backgroundColor: '#0A84FF',
+    borderRadius: 10,
   },
   emptyButtonText: {
-    color: '#fff',
+    color: '#FFFFFF',
     fontWeight: '600',
   },
 });

@@ -17,6 +17,7 @@ export interface StockQuote {
   ticker: string;
   price: number;
   currency: 'USD' | 'JPY';
+  changePercent?: number;
 }
 
 /**
