@@ -42,6 +42,7 @@ export function sendStockAlert(
       body: `設定値(${kindLabel})に達しました。現在値: ${currentStr}`,
       data: { ticker: item.ticker },
     },
-    trigger: { seconds: 1 },
+    /** null = 即時配信（Expo の型定義上の NotificationTriggerInput に準拠） */
+    trigger: null,
   });
 }

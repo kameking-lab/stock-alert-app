@@ -5,7 +5,7 @@
 
 import * as BackgroundFetch from 'expo-background-fetch';
 import * as TaskManager from 'expo-task-manager';
-import { loadStocks } from '../services/storage';
+import { loadMyStocks } from '../services/storage';
 import { fetchQuotes } from '../services/stockPriceService';
 import { sendStockAlert, requestNotificationPermissions } from '../services/notifications';
 import type { StockItem, StockQuote } from '../types/stock';
@@ -13,7 +13,7 @@ import type { StockItem, StockQuote } from '../types/stock';
 export const BACKGROUND_FETCH_TASK = 'BACKGROUND_FETCH_STOCK_PRICES';
 
 async function runBackgroundFetch(): Promise<void> {
-  const items = await loadStocks();
+  const items = await loadMyStocks();
   if (items.length === 0) return;
 
   const tickers = items.map((s) => s.ticker);

@@ -19,9 +19,13 @@ import {
   fetchStockDetail,
   fetchStockNews,
   searchStocks,
+  formatUsdAsJpyApprox,
+  getUsdJpyRate,
   type StockDetailData,
   type StockNewsItem,
 } from '../services/stockPriceService';
+import type { StockQuote } from '../types/stock';
+import { getExtendedHoursDisplay } from '../utils/extendedHours';
 import type { RootStackParamList } from '../../App';
 
 type StockDetailRoute = RouteProp<RootStackParamList, 'StockDetail'>;
@@ -45,6 +49,61 @@ function formatPrice(value: number, currency: string): string {
   return currency === 'JPY' ? `¥${Math.round(value)}` : `$${value.toFixed(2)}`;
 }
 
+function jstYmd(dateMs: number): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(dateMs));
+}
+
+function formatEarningsLine(ts: number): string {
+  const dateStr = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    month: 'long',
+    day: 'numeric',
+  }).format(new Date(ts));
+  const e = jstYmd(ts);
+  const today = jstYmd(Date.now());
+  const ea = new Date(`${e}T12:00:00+09:00`).getTime();
+  const ta = new Date(`${today}T12:00:00+09:00`).getTime();
+  const diffDays = Math.round((ea - ta) / 86400000);
+  if (diffDays === 0) return `${dateStr}（本日）`;
+  if (diffDays > 0) return `${dateStr}（あと${diffDays}日）`;
+  return `${dateStr}（${Math.abs(diffDays)}日前）`;
+}
+
+function RecommendationBadgeView({ recommendationKey }: { recommendationKey: string }) {
+  const k = recommendationKey.toLowerCase().replace(/-/g, '_');
+  if (['strong_buy', 'buy'].includes(k)) {
+    return (
+      <View style={[styles.recBadge, { backgroundColor: '#1B5E20' }]}>
+        <Text style={styles.recBadgeText}>🔥 買い推奨</Text>
+      </View>
+    );
+  }
+  if (k === 'hold') {
+    return (
+      <View style={[styles.recBadge, { backgroundColor: '#48484A' }]}>
+        <Text style={styles.recBadgeText}>⚖️ 中立（ホールド）</Text>
+      </View>
+    );
+  }
+  if (['sell', 'strong_sell'].includes(k)) {
+    return (
+      <View style={[styles.recBadge, { backgroundColor: '#0077B6' }]}>
+        <Text style={styles.recBadgeText}>❄️ 売り推奨</Text>
+      </View>
+    );
+  }
+  return (
+    <View style={[styles.recBadge, { backgroundColor: '#3A3A3C' }]}>
+      <Text style={styles.recBadgeText}>{recommendationKey}</Text>
+    </View>
+  );
+}
+
 export default function StockDetailScreen() {
   const navigation = useNavigation<StockDetailNav>();
   const route = useRoute<StockDetailRoute>();
@@ -61,17 +120,21 @@ export default function StockDetailScreen() {
   const [chartPrices, setChartPrices] = useState<number[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
   const [newsItems, setNewsItems] = useState<StockNewsItem[]>([]);
+  const [quote, setQuote] = useState<StockQuote | null>(null);
+  const [usdJpyRate, setUsdJpyRate] = useState<number | null>(null);
 
   useEffect(() => {
     let alive = true;
     (async () => {
       setLoading(true);
-      const [quote, matches, detail] = await Promise.all([
+      const [quoteRes, matches, detail, usdJpy] = await Promise.all([
         fetchQuote(ticker),
         searchStocks(ticker),
         fetchStockDetail(ticker),
+        getUsdJpyRate(),
       ]);
       if (!alive) return;
+      setUsdJpyRate(usdJpy);
 
       const exact = matches.find((item) => item.symbol.toUpperCase() === ticker.toUpperCase()) || matches[0];
       if (exact) {
@@ -79,10 +142,13 @@ export default function StockDetailScreen() {
         setExchange(exact.exchDisp || '—');
       }
 
-      if (quote) {
-        setPrice(quote.price);
-        setCurrency(quote.currency);
-        setChangePercent(quote.changePercent ?? 0);
+      if (quoteRes) {
+        setQuote(quoteRes);
+        setPrice(quoteRes.price);
+        setCurrency(quoteRes.currency);
+        setChangePercent(quoteRes.changePercent ?? 0);
+      } else {
+        setQuote(null);
       }
       setDetailData(detail);
       setLoading(false);
@@ -126,6 +192,8 @@ export default function StockDetailScreen() {
     const previousClose = price / base;
     return price - previousClose;
   }, [price, changePercent]);
+
+  const extDisplay = useMemo(() => getExtendedHoursDisplay(quote ?? undefined), [quote]);
 
   const positive = changePercent >= 0;
   const changeColor = positive ? '#34C759' : '#FF3B30';
@@ -204,11 +272,29 @@ export default function StockDetailScreen() {
             <Text style={styles.price}>
               {price != null ? formatPrice(price, currency) : '—'}
             </Text>
+            {currency === 'USD' && price != null && usdJpyRate != null ? (
+              <Text style={styles.jpyHint}>{formatUsdAsJpyApprox(price, usdJpyRate)}</Text>
+            ) : null}
             <Text style={[styles.change, { color: changeColor }]}>
               {changeAmount >= 0 ? '+' : ''}
               {formatPrice(Math.abs(changeAmount), currency)} ({changePercent >= 0 ? '+' : ''}
               {changePercent.toFixed(2)}%)
             </Text>
+
+            {extDisplay ? (
+              <View style={styles.extRow}>
+                <Text style={styles.extMoon}>🌙</Text>
+                <Text style={styles.extDetailText}>
+                  {extDisplay.label}: {formatPrice(extDisplay.price, currency)} (
+                  {extDisplay.changePercent >= 0 ? '+' : ''}
+                  {extDisplay.changePercent.toFixed(2)}%)
+                </Text>
+              </View>
+            ) : null}
+
+            {detailData?.recommendationKey ? (
+              <RecommendationBadgeView recommendationKey={detailData.recommendationKey} />
+            ) : null}
 
             <Text style={styles.market}>
               {exchange} - {currency}
@@ -266,6 +352,15 @@ export default function StockDetailScreen() {
                 <Text style={styles.axisLabel}>{xEndLabel}</Text>
               </View>
             </View>
+
+            {detailData?.nextEarningsDateMs != null ? (
+              <View style={styles.earningsCard}>
+                <Text style={styles.earningsTitle}>次回決算日</Text>
+                <Text style={styles.earningsValue}>
+                  {formatEarningsLine(detailData.nextEarningsDateMs)}
+                </Text>
+              </View>
+            ) : null}
 
             <View style={styles.newsSection}>
               <Text style={styles.newsTitle}>関連ニュース</Text>
@@ -405,6 +500,33 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
   },
+  jpyHint: {
+    marginTop: 6,
+    color: '#8E8E93',
+    fontSize: 14,
+    fontWeight: '500',
+    fontVariant: ['tabular-nums'],
+  },
+  earningsCard: {
+    marginTop: 20,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    backgroundColor: '#1C1C1E',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#2C2C2E',
+  },
+  earningsTitle: {
+    color: '#8E8E93',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  earningsValue: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '700',
+  },
   change: {
     marginTop: 8,
     fontSize: 17,
@@ -415,6 +537,34 @@ const styles = StyleSheet.create({
     marginTop: 8,
     color: '#8E8E93',
     fontSize: 14,
+  },
+  extRow: {
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  extMoon: {
+    fontSize: 14,
+  },
+  extDetailText: {
+    flex: 1,
+    color: '#AEAEB2',
+    fontSize: 13,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  recBadge: {
+    marginTop: 14,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  recBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
   chartSection: {
     marginTop: 24,

@@ -81,6 +81,13 @@ interface YahooChartResponse {
         chartPreviousClose?: number;
         previousClose?: number;
         symbol?: string;
+        marketState?: string;
+        postMarketPrice?: number;
+        postMarketChange?: number;
+        postMarketChangePercent?: number;
+        preMarketPrice?: number;
+        preMarketChange?: number;
+        preMarketChangePercent?: number;
       };
       indicators?: {
         quote?: Array<{ close?: (number | null)[] }>;
@@ -148,6 +155,9 @@ export interface StockDetailData {
   week52Low?: number;
   avgVolume?: number;
   currency?: string;
+  recommendationKey?: string;
+  /** 次回決算予定日（Unix ms、Yahoo calendarEvents） */
+  nextEarningsDateMs?: number;
 }
 
 export interface StockNewsItem {
@@ -157,6 +167,59 @@ export interface StockNewsItem {
   provider?: string;
   publishedAt?: number;
   url: string;
+}
+
+/** USD/JPY レートのキャッシュ（アプリ内で共有） */
+let usdJpyCache: { rate: number; fetchedAt: number } | null = null;
+const USDJPY_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Yahoo の USDJPY=X からドル円レートを取得（5分キャッシュ）
+ */
+export async function getUsdJpyRate(): Promise<number | null> {
+  const now = Date.now();
+  if (usdJpyCache && now - usdJpyCache.fetchedAt < USDJPY_TTL_MS) {
+    return usdJpyCache.rate;
+  }
+  const q = await fetchQuote('USDJPY=X');
+  const rate = q?.price;
+  if (rate != null && rate > 50 && rate < 600) {
+    usdJpyCache = { rate, fetchedAt: now };
+    return rate;
+  }
+  return usdJpyCache?.rate ?? null;
+}
+
+/** 表示用: 米ドル価格を円換算の注記文字列に */
+export function formatUsdAsJpyApprox(usdPrice: number, usdJpyRate: number): string {
+  const jpy = Math.round(usdPrice * usdJpyRate);
+  return `（約 ${new Intl.NumberFormat('ja-JP').format(jpy)}円）`;
+}
+
+function parseNextEarningsDateMs(result: Record<string, unknown>): number | undefined {
+  const ce = result.calendarEvents as Record<string, unknown> | undefined;
+  if (!ce) return undefined;
+  const earnings = ce.earnings as Record<string, unknown> | undefined;
+  if (!earnings) return undefined;
+  const rawDates = earnings.earningsDate;
+  if (!Array.isArray(rawDates) || rawDates.length === 0) return undefined;
+  const candidates: number[] = [];
+  for (const entry of rawDates) {
+    if (entry && typeof entry === 'object') {
+      const raw = (entry as { raw?: unknown }).raw;
+      if (typeof raw === 'number' && Number.isFinite(raw)) {
+        const ms = raw > 1e12 ? raw : raw * 1000;
+        candidates.push(ms);
+      }
+    }
+  }
+  if (candidates.length === 0) return undefined;
+  candidates.sort((a, b) => a - b);
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const t0 = startOfToday.getTime();
+  const next = candidates.find((t) => t >= t0 - 12 * 3600 * 1000) ?? candidates[candidates.length - 1];
+  return next;
 }
 
 function extractClosesFromSparkEntry(entry: YahooSparkResultEntry | undefined): number[] {
@@ -233,6 +296,9 @@ function parseChartResponse(ticker: string, data: YahooChartResponse): StockQuot
     currency = 'JPY';
   }
 
+  const meta = result.meta;
+  const marketState = typeof meta?.marketState === 'string' ? meta.marketState : undefined;
+
   return {
     ticker,
     price,
@@ -241,6 +307,13 @@ function parseChartResponse(ticker: string, data: YahooChartResponse): StockQuot
       previousClose && previousClose > 0
         ? ((price - previousClose) / previousClose) * 100
         : undefined,
+    marketState,
+    postMarketPrice: numFromYahooField(meta?.postMarketPrice),
+    postMarketChange: numFromYahooField(meta?.postMarketChange),
+    postMarketChangePercent: numFromYahooField(meta?.postMarketChangePercent),
+    preMarketPrice: numFromYahooField(meta?.preMarketPrice),
+    preMarketChange: numFromYahooField(meta?.preMarketChange),
+    preMarketChangePercent: numFromYahooField(meta?.preMarketChangePercent),
   };
 }
 
@@ -350,6 +423,17 @@ function parseQuoteSummaryToDetail(
   const price = (result.price ?? {}) as Record<string, unknown>;
   const summaryDetail = (result.summaryDetail ?? {}) as Record<string, unknown>;
   const defaultKeyStatistics = (result.defaultKeyStatistics ?? {}) as Record<string, unknown>;
+  const financialData = (result.financialData ?? {}) as Record<string, unknown>;
+
+  let recommendationKey: string | undefined;
+  const rawRec = financialData.recommendationKey;
+  if (typeof rawRec === 'string' && rawRec.length > 0) {
+    recommendationKey = rawRec;
+  } else if (rawRec && typeof rawRec === 'object' && rawRec !== null) {
+    const o = rawRec as { fmt?: unknown; raw?: unknown };
+    if (typeof o.fmt === 'string') recommendationKey = o.fmt;
+    else if (typeof o.raw === 'string') recommendationKey = o.raw;
+  }
 
   return {
     open: numFromYahooField(price.regularMarketOpen),
@@ -364,11 +448,15 @@ function parseQuoteSummaryToDetail(
     week52Low: numFromYahooField(summaryDetail.fiftyTwoWeekLow),
     avgVolume: numFromYahooField(summaryDetail.averageVolume),
     currency: typeof price.currency === 'string' ? price.currency : undefined,
+    recommendationKey,
+    nextEarningsDateMs: parseNextEarningsDateMs(result),
   };
 }
 
 function isDetailDataEmpty(d: StockDetailData | null): boolean {
   if (!d) return true;
+  if (d.recommendationKey) return false;
+  if (d.nextEarningsDateMs != null) return false;
   return (
     d.open == null &&
     d.high == null &&
@@ -388,7 +476,7 @@ export async function fetchStockDetail(symbol: string): Promise<StockDetailData 
 
   const path = `/v10/finance/quoteSummary/${encodeURIComponent(
     s
-  )}?modules=price,summaryDetail,defaultKeyStatistics`;
+  )}?modules=price,summaryDetail,defaultKeyStatistics,financialData,calendarEvents`;
 
   const tryHost = async (host: 'query2' | 'query1'): Promise<StockDetailData | null> => {
     const data = await yahooFetchJson<YahooQuoteSummaryResponse>(

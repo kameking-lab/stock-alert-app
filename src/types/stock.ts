@@ -18,6 +18,13 @@ export interface StockQuote {
   price: number;
   currency: 'USD' | 'JPY';
   changePercent?: number;
+  marketState?: string;
+  postMarketPrice?: number;
+  postMarketChange?: number;
+  postMarketChangePercent?: number;
+  preMarketPrice?: number;
+  preMarketChange?: number;
+  preMarketChangePercent?: number;
 }
 
 /**
