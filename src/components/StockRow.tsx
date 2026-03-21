@@ -34,17 +34,21 @@ export default function StockRow({ item, onDelete, onPress, drag, isActive, pric
 
   const chartWidth = 90;
   const chartHeight = 40;
+  const validPrices =
+    prices?.filter((v) => typeof v === 'number' && Number.isFinite(v)) ?? [];
   let points = '';
-  if (prices && prices.length >= 2) {
-    const min = Math.min(...prices);
-    const max = Math.max(...prices);
+  if (validPrices.length >= 2) {
+    const min = Math.min(...validPrices);
+    const max = Math.max(...validPrices);
     const range = max - min || 1;
-    points = prices
+    points = validPrices
       .map((value, index) => {
-        const x = (index / (prices.length - 1)) * chartWidth;
+        const x = (index / (validPrices.length - 1)) * chartWidth;
         const y = chartHeight - ((value - min) / range) * chartHeight;
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
         return `${x.toFixed(2)},${y.toFixed(2)}`;
       })
+      .filter((p): p is string => p != null)
       .join(' ');
   }
 
@@ -131,6 +135,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: '#1C1C1E',
     marginHorizontal: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
   },
   right: {
     flex: 0.9,

@@ -141,7 +141,7 @@ export default function HomeScreen() {
               onPress={() => navigation.navigate('StockDetail', { ticker: item.ticker })}
               drag={drag}
               isActive={isActive}
-              prices={sparklines[item.ticker]}
+              prices={sparklines[item.ticker.toUpperCase()]}
             />
           )}
           onDragEnd={onDragEnd}
