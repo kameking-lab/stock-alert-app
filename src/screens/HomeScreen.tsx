@@ -3,6 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   View,
   Text,
@@ -11,27 +12,37 @@ import {
   Alert,
   Platform,
   ScrollView,
+  AppState,
+  type AppStateStatus,
 } from 'react-native';
 import { GestureHandlerRootView, TouchableOpacity } from 'react-native-gesture-handler';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { CompositeNavigationProp } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import DraggableFlatList from 'react-native-draggable-flatlist';
 import type { StockItem, StockRowItem } from '../types/stock';
 import { loadMyStocks, removeStock, saveMyStocks, SP500_TOP20_STOCKS } from '../services/storage';
-import { fetchQuotes, fetchSparklines, getUsdJpyRate, SPARK_RANGE_OPTIONS } from '../services/stockPriceService';
+import { SPARK_RANGE_OPTIONS } from '../services/stockPriceService';
+import { useSparklines, useStockQuotes, useUsdJpyRate } from '../hooks/useStocks';
 import * as Haptics from 'expo-haptics';
 import { getDisplayName } from '../types/stock';
 import StockRow from '../components/StockRow';
 import AddStockModal from '../components/AddStockModal';
 import MarketStatusBanner from '../components/MarketStatusBanner';
+import VixMeter from '../components/VixMeter';
 import type { MainTabParamList, RootStackParamList } from '../../App';
 
 type HomeScreenNavigation = CompositeNavigationProp<
   BottomTabNavigationProp<MainTabParamList, 'Home'>,
   NativeStackNavigationProp<RootStackParamList>
 >;
+
+const HOME_QUOTES_POLL_MS = 60_000;
+const HOME_SPARK_POLL_MS = 120_000;
+const HOME_USD_POLL_MS = 300_000;
+
+const EMPTY_SPARKLINES: Record<string, number[]> = {};
 
 function todayLabelJst(): string {
   return new Intl.DateTimeFormat('ja-JP', {
@@ -45,65 +56,98 @@ function todayLabelJst(): string {
 
 export default function HomeScreen() {
   const navigation = useNavigation<HomeScreenNavigation>();
-  const [rows, setRows] = useState<StockRowItem[]>([]);
-  const [sp500Rows, setSp500Rows] = useState<StockRowItem[]>([]);
-  const [sparklines, setSparklines] = useState<Record<string, number[]>>({});
+  const queryClient = useQueryClient();
+  const [stockList, setStockList] = useState<StockItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
-  const [usdJpyRate, setUsdJpyRate] = useState<number | null>(null);
   const [sparkRange, setSparkRange] = useState<string>('1d');
 
   const dateStr = useMemo(() => todayLabelJst(), []);
 
-  const load = useCallback(async () => {
+  const allTickers = useMemo(
+    () => [...new Set([...stockList.map((s) => s.ticker), ...SP500_TOP20_STOCKS.map((s) => s.ticker)])],
+    [stockList]
+  );
+
+  const [appState, setAppState] = useState<AppStateStatus>(AppState.currentState);
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', setAppState);
+    return () => sub.remove();
+  }, []);
+
+  const [screenFocused, setScreenFocused] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      setScreenFocused(true);
+      return () => setScreenFocused(false);
+    }, [])
+  );
+
+  const isAppActive = appState === 'active';
+  const shouldPoll = isAppActive && screenFocused;
+
+  const quotePoll = useMemo(
+    () => (shouldPoll ? { refetchInterval: HOME_QUOTES_POLL_MS } : undefined),
+    [shouldPoll]
+  );
+  const sparkPoll = useMemo(
+    () => (shouldPoll ? { refetchInterval: HOME_SPARK_POLL_MS } : undefined),
+    [shouldPoll]
+  );
+  const usdPoll = useMemo(
+    () => (shouldPoll ? { refetchInterval: HOME_USD_POLL_MS } : undefined),
+    [shouldPoll]
+  );
+
+  const usdJpyQuery = useUsdJpyRate(usdPoll);
+  const quotesQuery = useStockQuotes(allTickers, quotePoll);
+  const sparklinesQuery = useSparklines(allTickers, sparkRange, sparkPoll);
+
+  const usdJpyRate = usdJpyQuery.data ?? null;
+  const sparklines = sparklinesQuery.data ?? EMPTY_SPARKLINES;
+
+  const rows: StockRowItem[] = useMemo(
+    () =>
+      stockList.map((item) => ({
+        ...item,
+        quote: quotesQuery.data?.[item.ticker],
+      })),
+    [stockList, quotesQuery.data]
+  );
+
+  const sp500Rows: StockRowItem[] = useMemo(
+    () =>
+      SP500_TOP20_STOCKS.map((item) => ({
+        ...item,
+        quote: quotesQuery.data?.[item.ticker],
+      })),
+    [quotesQuery.data]
+  );
+
+  const refreshStockList = useCallback(async () => {
     const list = await loadMyStocks();
-    const sp500 = SP500_TOP20_STOCKS;
-    const allTickers = [...new Set([...list.map((s) => s.ticker), ...sp500.map((s) => s.ticker)])];
-
-    if (allTickers.length === 0) {
-      setRows([]);
-      setSp500Rows([]);
-      setSparklines({});
-      setUsdJpyRate(null);
-      return;
-    }
-
-    // 先に価格・為替を返し、その後スパーク（重い）を取得して体感を速くする
-    const [usdJpy, quotes] = await Promise.all([getUsdJpyRate(), fetchQuotes(allTickers)]);
-    setUsdJpyRate(usdJpy);
-
-    setRows(
-      list.map((item) => ({
-        ...item,
-        quote: quotes[item.ticker],
-      }))
-    );
-    setSp500Rows(
-      sp500.map((item) => ({
-        ...item,
-        quote: quotes[item.ticker],
-      }))
-    );
-
-    const nextSparklines = await fetchSparklines(allTickers, sparkRange);
-    setSparklines(nextSparklines);
-  }, [sparkRange]);
+    setStockList(list);
+  }, []);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    void refreshStockList();
+  }, [refreshStockList]);
 
   const onRefresh = useCallback(async () => {
     setLoading(true);
     try {
-      await load();
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['usdJpy'] }),
+        queryClient.invalidateQueries({ queryKey: ['quotes'] }),
+        queryClient.invalidateQueries({ queryKey: ['sparklines'] }),
+      ]);
     } finally {
       setLoading(false);
     }
     if (Platform.OS !== 'web') {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
-  }, [load]);
+  }, [queryClient]);
 
   const onAdd = useCallback(() => {
     setModalVisible(true);
@@ -111,8 +155,8 @@ export default function HomeScreen() {
 
   const onModalClose = useCallback(() => {
     setModalVisible(false);
-    load();
-  }, [load]);
+    void refreshStockList();
+  }, [refreshStockList]);
 
   const onDelete = useCallback(
     (item: StockItem) => {
@@ -126,18 +170,17 @@ export default function HomeScreen() {
             style: 'destructive',
             onPress: async () => {
               await removeStock(item.id);
-              await load();
+              await refreshStockList();
             },
           },
         ]
       );
     },
-    [load]
+    [refreshStockList]
   );
 
   const onDragEnd = useCallback(
     async ({ data }: { data: StockRowItem[] }) => {
-      setRows(data);
       const nextItems: StockItem[] = data.map((row) => ({
         id: row.id,
         ticker: row.ticker,
@@ -146,6 +189,7 @@ export default function HomeScreen() {
         displayName: row.displayName,
         createdAt: row.createdAt,
       }));
+      setStockList(nextItems);
       await saveMyStocks(nextItems);
     },
     []
@@ -177,7 +221,8 @@ export default function HomeScreen() {
   const listHeader = (
     <View>
       <Text style={styles.dateLine}>{dateStr}</Text>
-      <MarketStatusBanner />
+      <MarketStatusBanner enableMinuteTicker={shouldPoll} />
+      <VixMeter poll={quotePoll} />
       <View style={styles.sparkSection}>
         <Text style={styles.sparkSectionLabel}>ミニチャート期間</Text>
         {sparkTabs}

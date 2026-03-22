@@ -4,6 +4,7 @@ import 'react-native-gesture-handler';
  */
 
 import React, { useEffect, useState } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
 import { NavigationContainer } from '@react-navigation/native';
@@ -29,6 +30,15 @@ export type RootStackParamList = {
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tab = createBottomTabNavigator<MainTabParamList>();
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: 1,
+      refetchOnWindowFocus: false,
+    },
+  },
+});
 
 const TAB_BAR_STYLE = {
   backgroundColor: '#1C1C1E',
@@ -86,7 +96,7 @@ export default function App() {
   if (!ready) return null;
 
   return (
-    <>
+    <QueryClientProvider client={queryClient}>
       <StatusBar style="light" />
       <NavigationContainer>
         <Stack.Navigator screenOptions={{ headerShown: false }}>
@@ -94,6 +104,6 @@ export default function App() {
           <Stack.Screen name="StockDetail" component={StockDetailScreen} />
         </Stack.Navigator>
       </NavigationContainer>
-    </>
+    </QueryClientProvider>
   );
 }

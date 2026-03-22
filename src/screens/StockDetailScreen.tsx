@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -13,24 +13,21 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import Svg, { Polyline, Text as SvgText } from 'react-native-svg';
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { formatUsdAsJpyApprox } from '../services/stockPriceService';
 import {
-  fetchChartData,
-  fetchQuote,
-  fetchStockDetail,
-  fetchStockNews,
-  searchStocks,
-  formatUsdAsJpyApprox,
-  getUsdJpyRate,
-  type StockDetailData,
-  type StockNewsItem,
-} from '../services/stockPriceService';
-import type { StockQuote } from '../types/stock';
+  useStockChart,
+  useStockDetail,
+  useStockNews,
+  useStockQuote,
+  useStockSearchForTicker,
+  useUsdJpyRate,
+} from '../hooks/useStocks';
 import { getExtendedHoursDisplay } from '../utils/extendedHours';
 import type { RootStackParamList } from '../../App';
 import AIAnalysisModal from '../components/AIAnalysisModal';
+import DetailChart from '../components/DetailChart';
 import { analyzeStockWithAI, GEMINI_KEY_MISSING_MESSAGE } from '../services/aiService';
 
 type StockDetailRoute = RouteProp<RootStackParamList, 'StockDetail'>;
@@ -116,85 +113,43 @@ export default function StockDetailScreen() {
   const { ticker } = route.params;
   const { width: windowWidth } = useWindowDimensions();
 
-  const [loading, setLoading] = useState(true);
-  const [price, setPrice] = useState<number | null>(null);
-  const [currency, setCurrency] = useState<'USD' | 'JPY'>('USD');
-  const [changePercent, setChangePercent] = useState<number>(0);
-  const [companyName, setCompanyName] = useState<string>(ticker);
-  const [exchange, setExchange] = useState<string>('—');
-  const [detailData, setDetailData] = useState<StockDetailData | null>(null);
   const [selectedRange, setSelectedRange] = useState<string>('1d');
-  const [chartPrices, setChartPrices] = useState<number[]>([]);
-  const [chartLoading, setChartLoading] = useState(false);
-  const [newsItems, setNewsItems] = useState<StockNewsItem[]>([]);
-  const [quote, setQuote] = useState<StockQuote | null>(null);
-  const [usdJpyRate, setUsdJpyRate] = useState<number | null>(null);
   const [aiModalVisible, setAiModalVisible] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiResultText, setAiResultText] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      setLoading(true);
-      const [quoteRes, matches, detail, usdJpy] = await Promise.all([
-        fetchQuote(ticker),
-        searchStocks(ticker),
-        fetchStockDetail(ticker),
-        getUsdJpyRate(),
-      ]);
-      if (!alive) return;
-      setUsdJpyRate(usdJpy);
+  const quoteQuery = useStockQuote(ticker);
+  const searchQuery = useStockSearchForTicker(ticker);
+  const detailQuery = useStockDetail(ticker);
+  const usdJpyQuery = useUsdJpyRate();
+  const newsQuery = useStockNews(ticker);
+  const chartQuery = useStockChart(ticker, selectedRange);
 
-      const exact = matches.find((item) => item.symbol.toUpperCase() === ticker.toUpperCase()) || matches[0];
-      if (exact) {
-        setCompanyName(exact.longname || exact.shortname || exact.symbol);
-        setExchange(exact.exchDisp || '—');
-      }
+  const loading =
+    quoteQuery.isPending ||
+    searchQuery.isPending ||
+    detailQuery.isPending ||
+    usdJpyQuery.isPending;
 
-      if (quoteRes) {
-        setQuote(quoteRes);
-        setPrice(quoteRes.price);
-        setCurrency(quoteRes.currency);
-        setChangePercent(quoteRes.changePercent ?? 0);
-      } else {
-        setQuote(null);
-      }
-      setDetailData(detail);
-      setLoading(false);
-    })();
+  const matches = searchQuery.data ?? [];
+  const exact = useMemo(
+    () => matches.find((item) => item.symbol.toUpperCase() === ticker.toUpperCase()) || matches[0],
+    [matches, ticker]
+  );
+  const companyName = exact?.longname || exact?.shortname || exact?.symbol || ticker;
+  const exchange = exact?.exchDisp || '—';
 
-    return () => {
-      alive = false;
-    };
-  }, [ticker]);
-
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      const news = await fetchStockNews(ticker);
-      if (!alive) return;
-      setNewsItems(news);
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [ticker]);
-
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      setChartLoading(true);
-      const prices = await fetchChartData(ticker, selectedRange);
-      if (!alive) return;
-      setChartPrices(prices);
-      setChartLoading(false);
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [ticker, selectedRange]);
+  const quoteRes = quoteQuery.data ?? null;
+  const price = quoteRes?.price ?? null;
+  const currency = (quoteRes?.currency ?? 'USD') as 'USD' | 'JPY';
+  const changePercent = quoteRes?.changePercent ?? 0;
+  const detailData = detailQuery.data ?? null;
+  const newsItems = newsQuery.data ?? [];
+  const chartPrices = chartQuery.data ?? [];
+  const chartLoading = chartQuery.isFetching;
+  const usdJpyRate = usdJpyQuery.data ?? null;
+  const quote = quoteRes;
 
   const changeAmount = useMemo(() => {
     if (price == null) return 0;
@@ -227,22 +182,6 @@ export default function StockDetailScreen() {
   const chartWidth = Math.min(Math.max(windowWidth - 64, 260), 360);
   const chartHeight = 150;
   const chartPad = 12;
-  const chartInnerW = chartWidth - chartPad * 2;
-  const chartInnerH = chartHeight - chartPad * 2;
-  const chartMin = chartPrices.length > 0 ? Math.min(...chartPrices) : 0;
-  const chartMax = chartPrices.length > 0 ? Math.max(...chartPrices) : 0;
-  const chartRange = chartMax - chartMin || 1;
-  const chartPoints =
-    chartPrices.length >= 2
-      ? chartPrices
-          .map((value, index) => {
-            const x = chartPad + (index / (chartPrices.length - 1)) * chartInnerW;
-            const y =
-              chartPad + chartInnerH - ((value - chartMin) / chartRange) * chartInnerH;
-            return `${x.toFixed(2)},${y.toFixed(2)}`;
-          })
-          .join(' ')
-      : '';
 
   const xStartLabel = selectedRange === '1d' ? '開始' : '過去';
   const xEndLabel = selectedRange === '1d' ? '現在' : '現在';
@@ -364,84 +303,18 @@ export default function StockDetailScreen() {
               <View style={styles.chartBox}>
                 {chartLoading ? (
                   <ActivityIndicator size="small" color="#0A84FF" />
-                ) : chartPoints ? (
-                  <Svg width={chartWidth} height={chartHeight + 36}>
-                    <SvgText
-                      x={chartPad}
-                      y={18}
-                      fill="#EBEBF5"
-                      fontSize={12}
-                      fontWeight="600"
-                    >
-                      {chartMax ? formatPrice(chartMax, detailCurrency) : '—'}
-                    </SvgText>
-                    <SvgText
-                      x={chartWidth - chartPad}
-                      y={18}
-                      fill="#EBEBF5"
-                      fontSize={12}
-                      fontWeight="600"
-                      textAnchor="end"
-                    >
-                      高
-                    </SvgText>
-                    <Polyline
-                      points={chartPoints}
-                      fill="none"
-                      stroke={changeColor}
-                      strokeWidth={2}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <SvgText
-                      x={chartPad}
-                      y={chartHeight - 4}
-                      fill="#EBEBF5"
-                      fontSize={12}
-                      fontWeight="600"
-                    >
-                      {chartMin ? formatPrice(chartMin, detailCurrency) : '—'}
-                    </SvgText>
-                    <SvgText
-                      x={chartWidth - chartPad}
-                      y={chartHeight - 4}
-                      fill="#EBEBF5"
-                      fontSize={12}
-                      fontWeight="600"
-                      textAnchor="end"
-                    >
-                      低
-                    </SvgText>
-                    <SvgText
-                      x={chartPad}
-                      y={chartHeight + 22}
-                      fill="#AEAEB2"
-                      fontSize={11}
-                      fontWeight="500"
-                    >
-                      {xStartLabel}
-                    </SvgText>
-                    <SvgText
-                      x={chartWidth / 2}
-                      y={chartHeight + 22}
-                      fill="#AEAEB2"
-                      fontSize={11}
-                      fontWeight="500"
-                      textAnchor="middle"
-                    >
-                      {midLabel}
-                    </SvgText>
-                    <SvgText
-                      x={chartWidth - chartPad}
-                      y={chartHeight + 22}
-                      fill="#AEAEB2"
-                      fontSize={11}
-                      fontWeight="500"
-                      textAnchor="end"
-                    >
-                      {xEndLabel}
-                    </SvgText>
-                  </Svg>
+                ) : chartPrices.length >= 2 ? (
+                  <DetailChart
+                    chartPrices={chartPrices}
+                    chartWidth={chartWidth}
+                    chartHeight={chartHeight}
+                    chartPad={chartPad}
+                    detailCurrency={detailCurrency}
+                    changeColor={changeColor}
+                    xStartLabel={xStartLabel}
+                    xEndLabel={xEndLabel}
+                    midLabel={midLabel}
+                  />
                 ) : (
                   <Text style={styles.noChartText}>チャートデータなし</Text>
                 )}

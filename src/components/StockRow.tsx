@@ -29,7 +29,7 @@ interface Props {
   usdJpyRate?: number | null;
 }
 
-export default function StockRow({
+function StockRowInner({
   item,
   onDelete,
   onPress,
@@ -98,7 +98,7 @@ export default function StockRow({
   const rowInner = (
     <TouchableOpacity
       style={styles.row}
-      activeOpacity={0.85}
+      activeOpacity={0.55}
       onPress={onPress}
       delayPressIn={0}
     >
@@ -210,7 +210,7 @@ export default function StockRow({
         <Swipeable
           overshootRight={false}
           friction={2}
-          activeOffsetX={[-18, 18]}
+          activeOffsetX={[-30, 30]}
           renderRightActions={() => (
             <TouchableOpacity
               style={styles.swipeDeleteBtn}
@@ -364,3 +364,5 @@ const styles = StyleSheet.create({
     paddingLeft: 10,
   },
 });
+
+export default React.memo(StockRowInner);

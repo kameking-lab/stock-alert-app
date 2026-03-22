@@ -4,13 +4,19 @@ import { formatCountdownJa, getUsMarketUiState } from '../utils/usMarketTime';
 
 const TICK_MS = 60 * 1000;
 
-export default function MarketStatusBanner() {
+type BannerProps = {
+  /** アプリがアクティブかつホームにフォーカスがあるときだけ 1 分カウントダウンを更新 */
+  enableMinuteTicker?: boolean;
+};
+
+function MarketStatusBannerInner({ enableMinuteTicker = true }: BannerProps) {
   const [, setTick] = useState(0);
 
   useEffect(() => {
+    if (!enableMinuteTicker) return;
     const id = setInterval(() => setTick((n) => n + 1), TICK_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [enableMinuteTicker]);
 
   const state = getUsMarketUiState(new Date());
   const countdown = formatCountdownJa(state.countdownMs);
@@ -27,6 +33,8 @@ export default function MarketStatusBanner() {
     </View>
   );
 }
+
+export default React.memo(MarketStatusBannerInner);
 
 const styles = StyleSheet.create({
   wrap: {

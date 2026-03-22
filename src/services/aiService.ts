@@ -10,7 +10,7 @@ export const GEMINI_KEY_MISSING_MESSAGE =
   'AI分析用のGemini APIキーがアプリに組み込まれていません。開発者のビルド設定を確認してください。';
 
 /** REST で指定するモデル ID */
-export const GEMINI_MODEL_ID = 'gemini-3.0-flash';
+export const GEMINI_MODEL_ID = 'gemini-3-flash';
 
 export type StockAnalysisInput = {
   ticker: string;
