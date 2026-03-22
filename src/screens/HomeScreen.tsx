@@ -7,26 +7,31 @@ import {
   View,
   Text,
   StyleSheet,
-  TouchableOpacity,
   RefreshControl,
   Alert,
   Platform,
+  ScrollView,
 } from 'react-native';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { GestureHandlerRootView, TouchableOpacity } from 'react-native-gesture-handler';
 import { useNavigation } from '@react-navigation/native';
+import type { CompositeNavigationProp } from '@react-navigation/native';
+import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import DraggableFlatList from 'react-native-draggable-flatlist';
 import type { StockItem, StockRowItem } from '../types/stock';
 import { loadMyStocks, removeStock, saveMyStocks, SP500_TOP20_STOCKS } from '../services/storage';
-import { fetchQuotes, fetchSparklines, getUsdJpyRate } from '../services/stockPriceService';
+import { fetchQuotes, fetchSparklines, getUsdJpyRate, SPARK_RANGE_OPTIONS } from '../services/stockPriceService';
 import * as Haptics from 'expo-haptics';
 import { getDisplayName } from '../types/stock';
 import StockRow from '../components/StockRow';
 import AddStockModal from '../components/AddStockModal';
 import MarketStatusBanner from '../components/MarketStatusBanner';
-import type { RootStackParamList } from '../../App';
+import type { MainTabParamList, RootStackParamList } from '../../App';
 
-type HomeScreenNavigation = NativeStackNavigationProp<RootStackParamList, 'Home'>;
+type HomeScreenNavigation = CompositeNavigationProp<
+  BottomTabNavigationProp<MainTabParamList, 'Home'>,
+  NativeStackNavigationProp<RootStackParamList>
+>;
 
 function todayLabelJst(): string {
   return new Intl.DateTimeFormat('ja-JP', {
@@ -46,6 +51,7 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [usdJpyRate, setUsdJpyRate] = useState<number | null>(null);
+  const [sparkRange, setSparkRange] = useState<string>('1d');
 
   const dateStr = useMemo(() => todayLabelJst(), []);
 
@@ -62,13 +68,9 @@ export default function HomeScreen() {
       return;
     }
 
-    const [usdJpy, quotes, nextSparklines] = await Promise.all([
-      getUsdJpyRate(),
-      fetchQuotes(allTickers),
-      fetchSparklines(allTickers),
-    ]);
+    // 先に価格・為替を返し、その後スパーク（重い）を取得して体感を速くする
+    const [usdJpy, quotes] = await Promise.all([getUsdJpyRate(), fetchQuotes(allTickers)]);
     setUsdJpyRate(usdJpy);
-    setSparklines(nextSparklines);
 
     setRows(
       list.map((item) => ({
@@ -82,7 +84,10 @@ export default function HomeScreen() {
         quote: quotes[item.ticker],
       }))
     );
-  }, []);
+
+    const nextSparklines = await fetchSparklines(allTickers, sparkRange);
+    setSparklines(nextSparklines);
+  }, [sparkRange]);
 
   useEffect(() => {
     load();
@@ -90,8 +95,11 @@ export default function HomeScreen() {
 
   const onRefresh = useCallback(async () => {
     setLoading(true);
-    await load();
-    setLoading(false);
+    try {
+      await load();
+    } finally {
+      setLoading(false);
+    }
     if (Platform.OS !== 'web') {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
@@ -143,10 +151,37 @@ export default function HomeScreen() {
     []
   );
 
+  const sparkTabs = (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={styles.sparkTabScroll}
+      contentContainerStyle={styles.sparkTabRow}
+    >
+      {SPARK_RANGE_OPTIONS.map((opt) => {
+        const active = opt.range === sparkRange;
+        return (
+          <TouchableOpacity
+            key={opt.range}
+            style={[styles.sparkChip, active && styles.sparkChipActive]}
+            onPress={() => setSparkRange(opt.range)}
+            hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+          >
+            <Text style={[styles.sparkChipText, active && styles.sparkChipTextActive]}>{opt.label}</Text>
+          </TouchableOpacity>
+        );
+      })}
+    </ScrollView>
+  );
+
   const listHeader = (
     <View>
       <Text style={styles.dateLine}>{dateStr}</Text>
       <MarketStatusBanner />
+      <View style={styles.sparkSection}>
+        <Text style={styles.sparkSectionLabel}>ミニチャート期間</Text>
+        {sparkTabs}
+      </View>
       <Text style={styles.sectionHeading}>マイウォッチリスト</Text>
     </View>
   );
@@ -175,7 +210,11 @@ export default function HomeScreen() {
       <View style={styles.container}>
         <View style={styles.header}>
           <Text style={styles.title}>株価アラート</Text>
-          <TouchableOpacity style={styles.addButton} onPress={onAdd}>
+          <TouchableOpacity
+            style={styles.addButton}
+            onPress={onAdd}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
             <Text style={styles.addButtonText}>+</Text>
           </TouchableOpacity>
         </View>
@@ -263,6 +302,44 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     marginBottom: 10,
+  },
+  sparkSection: {
+    marginBottom: 8,
+  },
+  sparkSectionLabel: {
+    color: '#8E8E93',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  sparkTabScroll: {
+    maxHeight: 44,
+  },
+  sparkTabRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingRight: 8,
+  },
+  sparkChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: '#1C1C1E',
+    borderWidth: 1,
+    borderColor: '#2C2C2E',
+  },
+  sparkChipActive: {
+    backgroundColor: '#2C2C2E',
+    borderColor: '#0A84FF',
+  },
+  sparkChipText: {
+    color: '#8E8E93',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  sparkChipTextActive: {
+    color: '#FFFFFF',
   },
   sectionHeading: {
     color: '#8E8E93',

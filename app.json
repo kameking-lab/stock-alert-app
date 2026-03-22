@@ -43,7 +43,8 @@
       "expo-notifications",
       "expo-background-fetch",
       "expo-asset",
-      "expo-font"
+      "expo-font",
+      "expo-secure-store"
     ],
     "extra": {
       "eas": {

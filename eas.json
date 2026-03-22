@@ -22,7 +22,8 @@
       "ios": {
         "resourceClass": "m1-medium"
       },
-      "autoIncrement": true
+      "autoIncrement": true,
+      "environment": "production"
     }
   },
   "submit": {

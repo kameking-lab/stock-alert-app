@@ -8,9 +8,12 @@ import {
   ScrollView,
   FlatList,
   Linking,
+  useWindowDimensions,
+  Alert,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import Svg, { Polyline } from 'react-native-svg';
+import Svg, { Polyline, Text as SvgText } from 'react-native-svg';
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
@@ -27,6 +30,8 @@ import {
 import type { StockQuote } from '../types/stock';
 import { getExtendedHoursDisplay } from '../utils/extendedHours';
 import type { RootStackParamList } from '../../App';
+import AIAnalysisModal from '../components/AIAnalysisModal';
+import { analyzeStockWithAI, GEMINI_KEY_MISSING_MESSAGE } from '../services/aiService';
 
 type StockDetailRoute = RouteProp<RootStackParamList, 'StockDetail'>;
 type StockDetailNav = NativeStackNavigationProp<RootStackParamList, 'StockDetail'>;
@@ -43,6 +48,7 @@ const RANGE_OPTIONS: RangeOption[] = [
   { label: '6か月', range: '6mo' },
   { label: '年初来', range: 'ytd' },
   { label: '1年間', range: '1y' },
+  { label: '5年', range: '5y' },
 ];
 
 function formatPrice(value: number, currency: string): string {
@@ -108,6 +114,7 @@ export default function StockDetailScreen() {
   const navigation = useNavigation<StockDetailNav>();
   const route = useRoute<StockDetailRoute>();
   const { ticker } = route.params;
+  const { width: windowWidth } = useWindowDimensions();
 
   const [loading, setLoading] = useState(true);
   const [price, setPrice] = useState<number | null>(null);
@@ -122,6 +129,10 @@ export default function StockDetailScreen() {
   const [newsItems, setNewsItems] = useState<StockNewsItem[]>([]);
   const [quote, setQuote] = useState<StockQuote | null>(null);
   const [usdJpyRate, setUsdJpyRate] = useState<number | null>(null);
+  const [aiModalVisible, setAiModalVisible] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiResultText, setAiResultText] = useState<string | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -213,8 +224,11 @@ export default function StockDetailScreen() {
     return formatNumber(value);
   };
 
-  const chartWidth = 300;
+  const chartWidth = Math.min(Math.max(windowWidth - 64, 260), 360);
   const chartHeight = 150;
+  const chartPad = 12;
+  const chartInnerW = chartWidth - chartPad * 2;
+  const chartInnerH = chartHeight - chartPad * 2;
   const chartMin = chartPrices.length > 0 ? Math.min(...chartPrices) : 0;
   const chartMax = chartPrices.length > 0 ? Math.max(...chartPrices) : 0;
   const chartRange = chartMax - chartMin || 1;
@@ -222,8 +236,9 @@ export default function StockDetailScreen() {
     chartPrices.length >= 2
       ? chartPrices
           .map((value, index) => {
-            const x = (index / (chartPrices.length - 1)) * chartWidth;
-            const y = chartHeight - ((value - chartMin) / chartRange) * chartHeight;
+            const x = chartPad + (index / (chartPrices.length - 1)) * chartInnerW;
+            const y =
+              chartPad + chartInnerH - ((value - chartMin) / chartRange) * chartInnerH;
             return `${x.toFixed(2)},${y.toFixed(2)}`;
           })
           .join(' ')
@@ -232,6 +247,33 @@ export default function StockDetailScreen() {
   const xStartLabel = selectedRange === '1d' ? '開始' : '過去';
   const xEndLabel = selectedRange === '1d' ? '現在' : '現在';
   const midLabel = RANGE_OPTIONS.find((item) => item.range === selectedRange)?.label ?? selectedRange;
+
+  const runAiAnalysis = async () => {
+    setAiModalVisible(true);
+    setAiLoading(true);
+    setAiResultText(null);
+    setAiError(null);
+    try {
+      const text = await analyzeStockWithAI({
+        ticker: ticker.toUpperCase(),
+        companyName,
+        currentPrice: price,
+        currency,
+        changePercent,
+        recommendationKey: detailData?.recommendationKey ?? null,
+        newsHeadlines: newsItems.map((n) => ({ title: n.title, summary: n.summary })),
+      });
+      setAiResultText(text);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '不明なエラーが発生しました';
+      setAiError(msg);
+      if (msg === GEMINI_KEY_MISSING_MESSAGE || msg.includes('Gemini APIキー')) {
+        Alert.alert('AI分析', GEMINI_KEY_MISSING_MESSAGE);
+      }
+    } finally {
+      setAiLoading(false);
+    }
+  };
 
   const formatRelativeTime = (timestamp?: number): string => {
     if (!timestamp) return '日時不明';
@@ -323,7 +365,26 @@ export default function StockDetailScreen() {
                 {chartLoading ? (
                   <ActivityIndicator size="small" color="#0A84FF" />
                 ) : chartPoints ? (
-                  <Svg width={chartWidth} height={chartHeight}>
+                  <Svg width={chartWidth} height={chartHeight + 36}>
+                    <SvgText
+                      x={chartPad}
+                      y={18}
+                      fill="#EBEBF5"
+                      fontSize={12}
+                      fontWeight="600"
+                    >
+                      {chartMax ? formatPrice(chartMax, detailCurrency) : '—'}
+                    </SvgText>
+                    <SvgText
+                      x={chartWidth - chartPad}
+                      y={18}
+                      fill="#EBEBF5"
+                      fontSize={12}
+                      fontWeight="600"
+                      textAnchor="end"
+                    >
+                      高
+                    </SvgText>
                     <Polyline
                       points={chartPoints}
                       fill="none"
@@ -332,24 +393,58 @@ export default function StockDetailScreen() {
                       strokeLinecap="round"
                       strokeLinejoin="round"
                     />
+                    <SvgText
+                      x={chartPad}
+                      y={chartHeight - 4}
+                      fill="#EBEBF5"
+                      fontSize={12}
+                      fontWeight="600"
+                    >
+                      {chartMin ? formatPrice(chartMin, detailCurrency) : '—'}
+                    </SvgText>
+                    <SvgText
+                      x={chartWidth - chartPad}
+                      y={chartHeight - 4}
+                      fill="#EBEBF5"
+                      fontSize={12}
+                      fontWeight="600"
+                      textAnchor="end"
+                    >
+                      低
+                    </SvgText>
+                    <SvgText
+                      x={chartPad}
+                      y={chartHeight + 22}
+                      fill="#AEAEB2"
+                      fontSize={11}
+                      fontWeight="500"
+                    >
+                      {xStartLabel}
+                    </SvgText>
+                    <SvgText
+                      x={chartWidth / 2}
+                      y={chartHeight + 22}
+                      fill="#AEAEB2"
+                      fontSize={11}
+                      fontWeight="500"
+                      textAnchor="middle"
+                    >
+                      {midLabel}
+                    </SvgText>
+                    <SvgText
+                      x={chartWidth - chartPad}
+                      y={chartHeight + 22}
+                      fill="#AEAEB2"
+                      fontSize={11}
+                      fontWeight="500"
+                      textAnchor="end"
+                    >
+                      {xEndLabel}
+                    </SvgText>
                   </Svg>
                 ) : (
                   <Text style={styles.noChartText}>チャートデータなし</Text>
                 )}
-              </View>
-
-              <View style={styles.chartAxisRow}>
-                <Text style={styles.axisLabel}>
-                  {chartMax ? formatPrice(chartMax, detailCurrency) : '—'}
-                </Text>
-                <Text style={styles.axisLabel}>
-                  {chartMin ? formatPrice(chartMin, detailCurrency) : '—'}
-                </Text>
-              </View>
-              <View style={styles.chartAxisRow}>
-                <Text style={styles.axisLabel}>{xStartLabel}</Text>
-                <Text style={styles.axisLabel}>{midLabel}</Text>
-                <Text style={styles.axisLabel}>{xEndLabel}</Text>
               </View>
             </View>
 
@@ -361,6 +456,24 @@ export default function StockDetailScreen() {
                 </Text>
               </View>
             ) : null}
+
+            <TouchableOpacity
+              activeOpacity={0.88}
+              onPress={runAiAnalysis}
+              style={styles.aiButtonWrap}
+              accessibilityRole="button"
+              accessibilityLabel="AIで買い時売り時を分析"
+            >
+              <LinearGradient
+                colors={['#4845E8', '#A855F7', '#EC4899']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.aiGradient}
+              >
+                <Text style={styles.aiButtonText}>✨ AIで買い時・売り時を分析</Text>
+                <Text style={styles.aiButtonSub}>ニュースと指標をまとめて解説（日本語）</Text>
+              </LinearGradient>
+            </TouchableOpacity>
 
             <View style={styles.newsSection}>
               <Text style={styles.newsTitle}>関連ニュース</Text>
@@ -448,6 +561,15 @@ export default function StockDetailScreen() {
           </>
         )}
       </ScrollView>
+
+      <AIAnalysisModal
+        visible={aiModalVisible}
+        title={`${ticker.toUpperCase()} — AI分析`}
+        loading={aiLoading}
+        text={aiResultText}
+        error={aiError}
+        onClose={() => setAiModalVisible(false)}
+      />
     </View>
   );
 }
@@ -527,6 +649,31 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '700',
   },
+  aiButtonWrap: {
+    marginTop: 20,
+    borderRadius: 14,
+    overflow: 'hidden',
+    shadowColor: '#A855F7',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  aiGradient: {
+    paddingVertical: 16,
+    paddingHorizontal: 18,
+  },
+  aiButtonText: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  aiButtonSub: {
+    marginTop: 6,
+    color: 'rgba(255,255,255,0.88)',
+    fontSize: 13,
+    fontWeight: '600',
+  },
   change: {
     marginTop: 8,
     fontSize: 17,
@@ -598,7 +745,8 @@ const styles = StyleSheet.create({
   },
   chartBox: {
     marginTop: 14,
-    height: 170,
+    minHeight: 200,
+    paddingVertical: 8,
     borderRadius: 12,
     backgroundColor: '#1C1C1E',
     alignItems: 'center',

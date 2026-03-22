@@ -4,6 +4,37 @@
  */
 
 import type { StockQuote } from '../types/stock';
+import { withTimeout } from '../utils/promiseTimeout';
+
+/** ホームのミニチャート期間（スパークライン） */
+export const SPARK_RANGE_OPTIONS: { label: string; range: string }[] = [
+  { label: '1日', range: '1d' },
+  { label: '1週間', range: '5d' },
+  { label: '1か月', range: '1mo' },
+  { label: '3か月', range: '3mo' },
+  { label: '半年', range: '6mo' },
+  { label: '年初来', range: 'ytd' },
+  { label: '1年', range: '1y' },
+  { label: '5年', range: '5y' },
+];
+
+export function getSparkIntervalForRange(range: string): string {
+  const m: Record<string, string> = {
+    '1d': '15m',
+    '5d': '30m',
+    '1mo': '1d',
+    '3mo': '1d',
+    '6mo': '1d',
+    ytd: '1d',
+    '1y': '1d',
+    '5y': '1wk',
+  };
+  return m[range] ?? '1d';
+}
+
+const QUOTE_FETCH_MS = 12_000;
+const SPARK_FETCH_MS = 18_000;
+const FX_FETCH_MS = 8_000;
 
 /** 開発時のみ詳細ログ（本番ビルドでは __DEV__ が false） */
 function yahooLog(label: string, message: string, extra?: unknown): void {
@@ -60,13 +91,43 @@ function filterFiniteNumbers(values: (number | null | undefined)[] | undefined):
   return values.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
 }
 
-/** Yahoo の { raw: n } または数値リテラル両対応 */
+/** Yahoo の { raw } / { fmt } / 数値文字列 など幅広く数値化 */
 function numFromYahooField(field: unknown): number | undefined {
   if (field == null) return undefined;
   if (typeof field === 'number' && Number.isFinite(field)) return field;
-  if (typeof field === 'object' && field !== null && 'raw' in field) {
-    const raw = (field as { raw?: unknown }).raw;
-    if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof field === 'string') {
+    const cleaned = field.replace(/,/g, '').trim();
+    if (cleaned === '' || cleaned === '—') return undefined;
+    const n = Number(cleaned);
+    if (Number.isFinite(n)) return n;
+  }
+  if (typeof field === 'object' && field !== null) {
+    const o = field as Record<string, unknown>;
+    if ('raw' in o) {
+      const raw = o.raw;
+      if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+      if (typeof raw === 'string') {
+        const n = Number(raw.replace(/,/g, ''));
+        if (Number.isFinite(n)) return n;
+      }
+    }
+    if (typeof o.fmt === 'string') {
+      const n = Number(o.fmt.replace(/,/g, ''));
+      if (Number.isFinite(n)) return n;
+    }
+    if (typeof o.longFmt === 'string') {
+      const n = Number(String(o.longFmt).replace(/[^\d.-]/g, ''));
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return undefined;
+}
+
+/** 複数パスを順に試して最初の有効な数値を返す */
+function firstNumeric(...fields: unknown[]): number | undefined {
+  for (const f of fields) {
+    const n = numFromYahooField(f);
+    if (n != null) return n;
   }
   return undefined;
 }
@@ -181,7 +242,12 @@ export async function getUsdJpyRate(): Promise<number | null> {
   if (usdJpyCache && now - usdJpyCache.fetchedAt < USDJPY_TTL_MS) {
     return usdJpyCache.rate;
   }
-  const q = await fetchQuote('USDJPY=X');
+  let q: StockQuote | null = null;
+  try {
+    q = await withTimeout(fetchQuote('USDJPY=X'), FX_FETCH_MS);
+  } catch {
+    return usdJpyCache?.rate ?? null;
+  }
   const rate = q?.price;
   if (rate != null && rate > 50 && rate < 600) {
     usdJpyCache = { rate, fetchedAt: now };
@@ -276,6 +342,20 @@ async function fetchSparkResponse(
   return null;
 }
 
+async function fetchSparkResponseWithTimeout(
+  symbolsParam: string,
+  range: string,
+  interval: string,
+  label: string
+): Promise<YahooSparkResponse | null> {
+  try {
+    return await withTimeout(fetchSparkResponse(symbolsParam, range, interval, label), SPARK_FETCH_MS);
+  } catch {
+    yahooLog('fetchSparkResponseWithTimeout', 'timeout', label);
+    return null;
+  }
+}
+
 function parseChartResponse(ticker: string, data: YahooChartResponse): StockQuote | null {
   const result = data.chart?.result?.[0];
   if (!result) return null;
@@ -327,7 +407,15 @@ export async function fetchQuote(ticker: string): Promise<StockQuote | null> {
 
 export async function fetchQuotes(tickers: string[]): Promise<Record<string, StockQuote>> {
   const unique = [...new Set(tickers.filter(Boolean))];
-  const results = await Promise.all(unique.map((t) => fetchQuote(t)));
+  const results = await Promise.all(
+    unique.map(async (t) => {
+      try {
+        return await withTimeout(fetchQuote(t), QUOTE_FETCH_MS);
+      } catch {
+        return null as StockQuote | null;
+      }
+    })
+  );
   const out: Record<string, StockQuote> = {};
   unique.forEach((t, i) => {
     const q = results[i];
@@ -353,33 +441,81 @@ function parseSearchQuotes(data: YahooSearchResponse | null): StockSearchResult[
     }));
 }
 
+function mergeDedupeSearchResults(rows: StockSearchResult[]): StockSearchResult[] {
+  const seen = new Set<string>();
+  const out: StockSearchResult[] = [];
+  for (const r of rows) {
+    const k = r.symbol.toUpperCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(r);
+  }
+  return out;
+}
+
+function buildSearchUrl(queryStr: string, lang: string, region: string, quotesCount: number): string {
+  return `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(
+    queryStr
+  )}&quotesCount=${quotesCount}&newsCount=0&lang=${lang}&region=${region}`;
+}
+
 export async function searchStocks(query: string): Promise<StockSearchResult[]> {
   const q = query.trim();
   if (q.length < 2) return [];
 
-  const buildUrl = (lang: string, region: string) =>
-    `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(
-      q
-    )}&quotesCount=20&newsCount=0&lang=${lang}&region=${region}`;
-
-  let data = await yahooFetchJson<YahooSearchResponse>(buildUrl('ja-JP', 'JP'), 'searchStocks:ja');
-  let results = parseSearchQuotes(data);
-
-  if (results.length === 0 && CJK_OR_KANA.test(q)) {
-    yahooLog('searchStocks', 'no hits with ja-JP, retrying en-US');
-    data = await yahooFetchJson<YahooSearchResponse>(buildUrl('en-US', 'US'), 'searchStocks:en');
-    results = parseSearchQuotes(data);
+  const queryVariants: string[] = [q.normalize('NFC')];
+  if (/^\d{4}$/.test(q)) {
+    queryVariants.push(`${q}.T`);
   }
 
-  return results;
+  const paramSets: [string, string, number][] = [
+    ['ja-JP', 'JP', 40],
+    ['en-US', 'JP', 40],
+    ['ja-JP', 'JP', 20],
+    ['en-US', 'US', 40],
+  ];
+
+  let merged: StockSearchResult[] = [];
+
+  for (const qq of queryVariants) {
+    for (const [lang, region, n] of paramSets) {
+      const data = await yahooFetchJson<YahooSearchResponse>(
+        buildSearchUrl(qq, lang, region, n),
+        `searchStocks:${lang}:${region}`
+      );
+      merged = mergeDedupeSearchResults([...merged, ...parseSearchQuotes(data)]);
+      if (merged.length >= 18) {
+        return merged.slice(0, 20);
+      }
+    }
+  }
+
+  if (merged.length === 0 && CJK_OR_KANA.test(q)) {
+    yahooLog('searchStocks', 'CJK empty, last resort en-US US');
+    const data = await yahooFetchJson<YahooSearchResponse>(
+      buildSearchUrl(q, 'en-US', 'US', 40),
+      'searchStocks:en-last'
+    );
+    merged = parseSearchQuotes(data);
+  }
+
+  return merged;
 }
 
-export async function fetchSparklines(symbols: string[]): Promise<Record<string, number[]>> {
+export async function fetchSparklines(symbols: string[], range?: string): Promise<Record<string, number[]>> {
   const unique = [...new Set(symbols.map((s) => s.trim()).filter(Boolean))];
   if (unique.length === 0) return {};
 
+  const rangeKey = range ?? '1d';
+  const interval = getSparkIntervalForRange(rangeKey);
+
   const symbolsParam = encodeSymbolsForSparkParam(unique);
-  const data = await fetchSparkResponse(symbolsParam, '1d', '15m', 'fetchSparklines');
+  const data = await fetchSparkResponseWithTimeout(
+    symbolsParam,
+    rangeKey,
+    interval,
+    `fetchSparklines:${rangeKey}`
+  );
   const out: Record<string, number[]> = {};
 
   if (data?.spark?.result) {
@@ -400,9 +536,16 @@ export async function fetchSparklines(symbols: string[]): Promise<Record<string,
     yahooLog('fetchSparklines', `fallback chart for ${missing.length} symbols`);
     await Promise.all(
       missing.map(async (sym) => {
-        const closes = await fetchChartCloseSeries(sym, '1d', '15m', `fetchSparklines:${sym}`);
-        if (closes.length > 0) {
-          out[sym.toUpperCase()] = closes;
+        try {
+          const closes = await withTimeout(
+            fetchChartCloseSeries(sym, rangeKey, interval, `fetchSparklines:${sym}`),
+            SPARK_FETCH_MS
+          );
+          if (closes.length > 0) {
+            out[sym.toUpperCase()] = closes;
+          }
+        } catch {
+          /* timeout / 失敗はスキップ */
         }
       })
     );
@@ -436,17 +579,58 @@ function parseQuoteSummaryToDetail(
   }
 
   return {
-    open: numFromYahooField(price.regularMarketOpen),
-    high: numFromYahooField(price.regularMarketDayHigh),
-    low: numFromYahooField(price.regularMarketDayLow),
-    volume: numFromYahooField(summaryDetail.volume),
-    peRatio:
-      numFromYahooField(summaryDetail.trailingPE) ??
-      numFromYahooField(defaultKeyStatistics.trailingPE),
-    marketCap: numFromYahooField(price.marketCap),
-    week52High: numFromYahooField(summaryDetail.fiftyTwoWeekHigh),
-    week52Low: numFromYahooField(summaryDetail.fiftyTwoWeekLow),
-    avgVolume: numFromYahooField(summaryDetail.averageVolume),
+    open: firstNumeric(
+      price.regularMarketOpen,
+      price.open,
+      summaryDetail.open,
+      summaryDetail.regularMarketOpen
+    ),
+    high: firstNumeric(
+      price.regularMarketDayHigh,
+      price.regularMarketHigh,
+      price.dayHigh,
+      summaryDetail.dayHigh,
+      summaryDetail.regularMarketDayHigh,
+      summaryDetail.regularMarketHigh
+    ),
+    low: firstNumeric(
+      price.regularMarketDayLow,
+      price.regularMarketLow,
+      price.dayLow,
+      summaryDetail.dayLow,
+      summaryDetail.regularMarketDayLow,
+      summaryDetail.regularMarketLow
+    ),
+    volume: firstNumeric(
+      price.regularMarketVolume,
+      summaryDetail.volume,
+      summaryDetail.regularMarketVolume,
+      defaultKeyStatistics.volume
+    ),
+    peRatio: firstNumeric(
+      summaryDetail.trailingPE,
+      defaultKeyStatistics.trailingPE,
+      price.trailingPE,
+      summaryDetail.forwardPE,
+      price.forwardPE
+    ),
+    marketCap: firstNumeric(price.marketCap, summaryDetail.marketCap, defaultKeyStatistics.marketCap),
+    week52High: firstNumeric(
+      summaryDetail.fiftyTwoWeekHigh,
+      defaultKeyStatistics.fiftyTwoWeekHigh,
+      price.fiftyTwoWeekHigh
+    ),
+    week52Low: firstNumeric(
+      summaryDetail.fiftyTwoWeekLow,
+      defaultKeyStatistics.fiftyTwoWeekLow,
+      price.fiftyTwoWeekLow
+    ),
+    avgVolume: firstNumeric(
+      summaryDetail.averageVolume,
+      summaryDetail.averageVolume10days,
+      defaultKeyStatistics.averageVolume,
+      defaultKeyStatistics.averageVolume10days
+    ),
     currency: typeof price.currency === 'string' ? price.currency : undefined,
     recommendationKey,
     nextEarningsDateMs: parseNextEarningsDateMs(result),
@@ -512,6 +696,7 @@ export async function fetchChartData(symbol: string, range: string): Promise<num
     '6mo': '1d',
     ytd: '1d',
     '1y': '1d',
+    '5y': '1wk',
   };
   const interval = intervalMap[range] ?? '1d';
 
@@ -566,4 +751,71 @@ export async function fetchStockNews(symbol: string): Promise<StockNewsItem[]> {
       } as StockNewsItem;
     })
     .filter((item): item is StockNewsItem => item != null);
+}
+
+/** Yahoo スクリーナー（上昇・下落）1件 */
+export interface DayMoverItem {
+  symbol: string;
+  shortName?: string;
+  /** 当日の変動率（%） */
+  changePercent: number;
+  regularMarketPrice?: number;
+}
+
+function parseScreenerQuotes(data: unknown): DayMoverItem[] {
+  const finance = (data as { finance?: { result?: Array<{ quotes?: unknown[] }> } })?.finance;
+  const quotes = finance?.result?.[0]?.quotes;
+  if (!Array.isArray(quotes)) return [];
+
+  const out: DayMoverItem[] = [];
+  for (const raw of quotes) {
+    const q = raw as Record<string, unknown>;
+    const symbol = typeof q.symbol === 'string' ? q.symbol.trim().toUpperCase() : '';
+    if (!symbol) continue;
+    const changePercent = firstNumeric(q.regularMarketChangePercent) ?? 0;
+    const regularMarketPrice = firstNumeric(q.regularMarketPrice, q.regularMarketPreviousClose);
+    let shortName: string | undefined;
+    if (typeof q.shortName === 'string' && q.shortName.length > 0) shortName = q.shortName;
+    else if (typeof q.longName === 'string' && q.longName.length > 0) shortName = q.longName;
+
+    out.push({
+      symbol,
+      shortName,
+      changePercent,
+      regularMarketPrice,
+    });
+  }
+  return out;
+}
+
+/**
+ * 米国株の当日上昇・下落ランキング（Yahoo 定義済みスクリーナー）
+ */
+export async function fetchDayMovers(count = 25): Promise<{
+  gainers: DayMoverItem[];
+  losers: DayMoverItem[];
+}> {
+  const n = Math.min(50, Math.max(5, count));
+  const base2 = 'https://query2.finance.yahoo.com/v1/finance/screener/predefined/saved';
+  const base1 = 'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved';
+
+  const [gainersJson, losersJson] = await Promise.all([
+    yahooFetchJson<unknown>(`${base2}?scrIds=day_gainers&count=${n}`, 'fetchDayMovers:gainers'),
+    yahooFetchJson<unknown>(`${base2}?scrIds=day_losers&count=${n}`, 'fetchDayMovers:losers'),
+  ]);
+
+  let gainers = parseScreenerQuotes(gainersJson);
+  let losers = parseScreenerQuotes(losersJson);
+
+  if (gainers.length === 0 || losers.length === 0) {
+    yahooLog('fetchDayMovers', 'retry screener on query1');
+    const [g2, l2] = await Promise.all([
+      yahooFetchJson<unknown>(`${base1}?scrIds=day_gainers&count=${n}`, 'fetchDayMovers:gainers:q1'),
+      yahooFetchJson<unknown>(`${base1}?scrIds=day_losers&count=${n}`, 'fetchDayMovers:losers:q1'),
+    ]);
+    if (gainers.length === 0) gainers = parseScreenerQuotes(g2);
+    if (losers.length === 0) losers = parseScreenerQuotes(l2);
+  }
+
+  return { gainers, losers };
 }

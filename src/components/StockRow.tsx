@@ -3,11 +3,11 @@
  */
 
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Swipeable } from 'react-native-gesture-handler';
+import { View, Text, StyleSheet } from 'react-native';
+import { Swipeable, TouchableOpacity } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import Svg, { Polyline } from 'react-native-svg';
+import Svg, { Polyline, Line } from 'react-native-svg';
 import type { StockRowItem } from '../types/stock';
 import { isAboveUpper, isBelowLower } from '../types/stock';
 import { getExtendedHoursDisplay } from '../utils/extendedHours';
@@ -59,15 +59,26 @@ export default function StockRow({
   const chartHeight = 40;
   const validPrices =
     prices?.filter((v) => typeof v === 'number' && Number.isFinite(v)) ?? [];
+
+  const ul = item.upperLimit;
+  const ll = item.lowerLimit;
+  const showAlertLines =
+    !isSp500 && validPrices.length >= 2 && price != null && ul < 1e12 && ll >= 0 && ul > ll;
+
+  let chartMin = validPrices.length ? Math.min(...validPrices) : 0;
+  let chartMax = validPrices.length ? Math.max(...validPrices) : 1;
+  if (showAlertLines) {
+    chartMin = Math.min(chartMin, ul, ll);
+    chartMax = Math.max(chartMax, ul, ll);
+  }
+  const range = chartMax - chartMin || 1;
+
   let points = '';
   if (validPrices.length >= 2) {
-    const min = Math.min(...validPrices);
-    const max = Math.max(...validPrices);
-    const range = max - min || 1;
     points = validPrices
       .map((value, index) => {
         const x = (index / (validPrices.length - 1)) * chartWidth;
-        const y = chartHeight - ((value - min) / range) * chartHeight;
+        const y = chartHeight - ((value - chartMin) / range) * chartHeight;
         if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
         return `${x.toFixed(2)},${y.toFixed(2)}`;
       })
@@ -75,8 +86,22 @@ export default function StockRow({
       .join(' ');
   }
 
+  const yUpper =
+    showAlertLines && Number.isFinite(ul)
+      ? chartHeight - ((ul - chartMin) / range) * chartHeight
+      : null;
+  const yLower =
+    showAlertLines && Number.isFinite(ll)
+      ? chartHeight - ((ll - chartMin) / range) * chartHeight
+      : null;
+
   const rowInner = (
-    <TouchableOpacity style={styles.row} activeOpacity={0.8} onPress={onPress}>
+    <TouchableOpacity
+      style={styles.row}
+      activeOpacity={0.85}
+      onPress={onPress}
+      delayPressIn={0}
+    >
       <View style={styles.left}>
         <Text style={styles.ticker}>{item.ticker}</Text>
         <Text style={styles.company}>{item.displayName || item.ticker}</Text>
@@ -85,6 +110,30 @@ export default function StockRow({
       <View style={styles.chartPlaceholder}>
         {points ? (
           <Svg width={chartWidth} height={chartHeight}>
+            {yUpper != null && yUpper >= 0 && yUpper <= chartHeight ? (
+              <Line
+                x1={0}
+                y1={yUpper}
+                x2={chartWidth}
+                y2={yUpper}
+                stroke="#34C759"
+                strokeWidth={1}
+                strokeDasharray="4 4"
+                opacity={0.5}
+              />
+            ) : null}
+            {yLower != null && yLower >= 0 && yLower <= chartHeight ? (
+              <Line
+                x1={0}
+                y1={yLower}
+                x2={chartWidth}
+                y2={yLower}
+                stroke="#FF3B30"
+                strokeWidth={1}
+                strokeDasharray="4 4"
+                opacity={0.5}
+              />
+            ) : null}
             <Polyline
               points={points}
               fill="none"
@@ -108,6 +157,20 @@ export default function StockRow({
             {changePercent.toFixed(2)}%
           </Text>
         </View>
+        {showAlertLines && price != null ? (
+          <View style={styles.alertDistCol}>
+            {price < ul ? (
+              <Text style={styles.alertDistText} numberOfLines={1}>
+                上限まであと {formatPrice(ul - price, currency)}
+              </Text>
+            ) : null}
+            {price > ll ? (
+              <Text style={styles.alertDistText} numberOfLines={1}>
+                下限まであと {formatPrice(price - ll, currency)}
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
         {showExt ? (
           <View style={styles.extRow}>
             <Text style={styles.moon}>🌙</Text>
@@ -120,7 +183,12 @@ export default function StockRow({
       </View>
 
       {!isSp500 ? (
-        <TouchableOpacity style={styles.dragHandle} onLongPress={drag}>
+        <TouchableOpacity
+          style={styles.dragHandle}
+          onLongPress={drag}
+          delayLongPress={180}
+          hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+        >
           <Ionicons name="menu" size={18} color="#8E8E93" />
         </TouchableOpacity>
       ) : (
@@ -141,6 +209,8 @@ export default function StockRow({
       {!isSp500 ? (
         <Swipeable
           overshootRight={false}
+          friction={2}
+          activeOffsetX={[-18, 18]}
           renderRightActions={() => (
             <TouchableOpacity
               style={styles.swipeDeleteBtn}
@@ -253,6 +323,17 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  alertDistCol: {
+    marginTop: 6,
+    alignItems: 'flex-end',
+    maxWidth: 170,
+  },
+  alertDistText: {
+    fontSize: 10,
+    color: '#AEAEB2',
+    fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
   extRow: {
